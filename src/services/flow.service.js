@@ -1,137 +1,133 @@
 const storageService = require('./storage.service');
 const externalService = require('./external.service');
-const cohereService = require('./cohere.service');
+const geminiService = require('./gemini.service');
+const config = require('../config/envs');
 
 class FlowService {
     async execute(inputData, whatsappToken) {
         try {
-            // 1. Detectar Entrada (Lógica de n8n)
-            const { phone, recipient, text, pushName, type, lat, lon } = this.normalizeInput(inputData);
+            const input = this.normalizeInput(inputData);
+            if (input.isStatus || (!input.text && input.type === 'text' && !input.media)) {
+                return { success: true, ignored: true };
+            }
 
-            // 2. Obtener Datos del Sistema
-            const [allProducts, allClients] = await Promise.all([
+            let { phone, recipient, text, pushName, type, lat, lon, fromMe, media, mediaKey, mimeType } = input;
+
+            if (fromMe) {
+                if (text) await storageService.saveMessage(phone, 'assistant', text);
+                return { success: true, fromMe: true };
+            }
+
+            // 1. OBTENER DATA REAL
+            const [allProducts, allClients, allPendingSales, openRegisters] = await Promise.all([
                 externalService.getProducts(),
-                externalService.getClients()
+                externalService.getClients(),
+                externalService.getPendingSales(),
+                externalService.getOpenCashRegisters()
             ]);
 
             const availableProducts = allProducts.filter(p => p.stock > 0);
             const existingClient = allClients.find(c => c.phone && c.phone.includes(phone));
+            const pendingSale = allPendingSales.find(s => 
+                (s.delivery_phone && s.delivery_phone.includes(phone)) || 
+                (s.client && s.client.phone && s.client.phone.includes(phone))
+            );
 
-            // 3. Manejo de Ubicación
-            let mapAddress = "No enviada";
-            if (type === 'location') {
+            // 2. MAPBOX / UBICACIÓN
+            let mapAddress = null;
+            if (type === 'location' && lat && lon) {
                 mapAddress = await externalService.getReverseGeocoding(lat, lon);
             }
 
-            // 4. Consolidar datos de ubicación y nombre
-            let finalLat = lat;
-            let finalLon = lon;
-            let finalAddr = mapAddress;
-            let finalName = pushName;
-            let clientStatus = "NUEVO";
+            // 3. CONSOLIDACIÓN
+            let finalLat = lat || (existingClient ? existingClient.latitude : null);
+            let finalLon = lon || (existingClient ? existingClient.longitude : null);
+            let finalAddr = mapAddress || (existingClient ? existingClient.address : (pendingSale ? pendingSale.address : "No especificada"));
+            let finalName = existingClient ? existingClient.name : (pushName || "Campeón/a");
 
-            if (existingClient) {
-                clientStatus = "REGISTRADO";
-                finalLat = existingClient.latitude || lat;
-                finalLon = existingClient.longitude || lon;
-                finalAddr = existingClient.address || mapAddress;
-                finalName = existingClient.name || pushName;
-            }
+            // Pasamos los productos como contexto, pero el bot decidirá qué mostrar
+            const productsContext = availableProducts.map(p => `ID:${p.id} | ${p.name} | S/${p.price}`).join('\n');
 
-            const productsTxt = availableProducts.map(p => `- *${p.name}*: S/${p.price} (ID_Interno:${p.id})`).join('\n');
-
-            // 5. Preparar Fecha de entrega estimada (+30 min)
-            const now = new Date();
-            now.setMinutes(now.getMinutes() + 30);
-            const scheduled_at = now.toISOString().slice(0, 16);
-
-            // 6. Gestionar Memoria
+            // 4. MEMORIA
             const history = await storageService.getChatHistory(phone);
-            history.push({ role: 'user', content: text });
-            
-            // Limitar memoria a las últimas 20 interacciones
-            await storageService.saveMessage(phone, 'user', text);
+            const messageContent = media ? `[Envió ${type}] ${text || ''}` : text;
+            history.push({ role: 'user', content: messageContent });
+            await storageService.saveMessage(phone, 'user', messageContent);
 
-            // 7. Preparar System Prompt (Migrado tal cual de n8n)
-            const systemPrompt = `Eres JGas Bot, el mejor asesor de ventas. Tienes MEMORIA del chat.
+            // 5. PROMPT CON PERSONALIDAD (EMOJIS + INTELIGENCIA)
+            const systemPrompt = `Eres JGas Bot, el alma de JGas Huánuco. ✨
+Tu misión: Atender con una sonrisa (emojis), ser ultra eficiente y cerrar ventas.
 
-=== REGLAS DE ORO (COMPORTAMIENTO) ===
-1. PASO A PASO: Responde SOLO a lo que el cliente dice. 
-   - Si dice "Hola", ¡SOLO SALUDA! NO le envíes productos, NO le pidas dirección. Solo dile: "¡Hola ${finalName}! 👋 Bienvenido a JGas. ¿En qué puedo ayudarte hoy? 😊"
-   - Si pregunta "¿Qué vendes?" o "Quiero gas", RECIÉN AHÍ envíale la lista de productos.
-2. EMOJIS: Sé amable y usa emojis (😊, ✨, 🚚, ✅, 📍, 🔵).
-3. NUNCA menciones los "ID_Interno".
+PERSONALIDAD:
+- ¡Usa emojis! 🛵, 🔥, ✨, ✅, 🙏, 😊, 📍.
+- No eres un robot. Eres un asesor que ayuda a un amigo.
+- Si el cliente te saluda, salúdalo con alegría: "¡Hola ${finalName}! Qué gusto tenerte por aquí. ✨".
 
-=== REGLAS DE NEGOCIACIÓN ===
-1. Intenta SIEMPRE vender al precio normal.
-2. DESCUENTO 1: Si pide "rebaja" o "nada menos", descuenta 1 o 2 soles.
-3. DESCUENTO 2: Si es restaurante, mercado O pide 3 balones o más, descuenta 4 soles.
-4. TOTAL: Multiplica (Precio Unitario con/sin descuento) x (Cantidad).
+INTELIGENCIA DE PRODUCTO (DATOS REALES):
+Usa esta lista SOLO como referencia interna. NO la leas toda si no es necesario:
+${productsContext}
 
-=== ESTADO DEL CLIENTE ===
-- Nombre: ${finalName}
-- Tipo de Cliente: ${clientStatus}
-- Mensaje actual: "${text}"
+REGLAS DE ORO:
+1. FILTRADO: Si el cliente pide un tipo de gas (ej. "plomo"), dale el precio de ese específico. No le satures con otros.
+2. PRECIOS: Sé exacto con los precios de arriba. Si pide rebaja, dile que nuestro gas rinde más y es el más seguro de Huánuco. ✨
+3. NEGOCIACIÓN PRO: Solo si es negocio o lleva más de 3, puedes bajar un par de soles. Si insiste mucho, el tope es S/5 de descuento, pero hazlo sentir como un regalo especial. 😉
+4. UBICACIÓN: Si no sabes dónde enviarlo, pídela con cariño: "Amigo/a, para que el motorizado llegue volando, pásame tu ubicación con el clip 📎 de WhatsApp. ¡Así no nos perdemos! 📍🛵".
+5. PEDIDOS EN CURSO: Si ya tiene un pedido (${pendingSale ? 'ID '+pendingSale.id : 'Ninguno'}), dile: "¡Tranqui! Tu pedido ya está en manos del motorizado y está por llegar. 🛵💨 Porfa, estate atento a tu cel que te llamará al estar afuera. 🙏😊".
 
-=== MANEJO DE UBICACIÓN ===
-- Si el Tipo de Cliente es REGISTRADO: YA TENEMOS su dirección guardada. NO LE PIDAS GPS NUNCA. Solo ofrécele el producto y confirma el pedido.
-- Si es NUEVO y quiere pedir pero NO mandó GPS: Pídele que envíe su ubicación actual con el clip 📎.
-- Solo pon "is_ready": true cuando sepas QUÉ PRODUCTO quiere, y ya tengas su GPS (o sea cliente registrado).
-
-=== PRODUCTOS ===
-${productsTxt}
-
-=== JSON DE SALIDA OBLIGATORIO ===
+RESPONDE SIEMPRE EN JSON:
 {
-  "reply": "Tu mensaje aquí, con \\n\\n para saltos de línea y emojis.",
-  "is_ready": true/false,
+  "reply": "Tu mensaje encantador con emojis aquí...",
+  "should_respond": true,
+  "is_ready": true/false (solo si tienes p_id, qty y ubicación real),
   "order": {
-    "p_id": (ID_Interno o null),
-    "qty": (Cantidad o 1),
-    "discount": (Monto total descontado o 0),
-    "total_amount": (Monto final a cobrar),
+    "p_id": (id),
+    "qty": (cantidad),
+    "discount": (descuento unitario),
+    "total_amount": (total calculado),
     "customer_name": "${finalName}",
     "addr": "${finalAddr}",
     "lat": ${finalLat || 'null'},
     "lon": ${finalLon || 'null'},
-    "notes": "Alguna nota si aplica o vacío",
-    "scheduled_at": "${scheduled_at}"
+    "notes": "Algo que el repartidor deba saber"
   }
 }`;
 
-            // 8. Llamar a Cohere
-            const aiResponse = await cohereService.chat(systemPrompt, history);
+            // 6. LLAMAR A GEMINI
+            const aiResponse = await geminiService.chat(systemPrompt, history, media);
 
-            // 9. Guardar Respuesta en Memoria
-            await storageService.saveMessage(phone, 'assistant', aiResponse.reply);
-
-            // 10. Procesar Pedido si está listo
+            // 7. ASIGNACIÓN Y PROCESAMIENTO
             if (aiResponse.is_ready) {
+                let riderId = 2; // Default
+                if (openRegisters.length > 0) {
+                    riderId = openRegisters[Math.floor(Math.random() * openRegisters.length)].opened_by.id;
+                }
+
                 await externalService.registerOrder({
                     phone: phone,
                     customer_name: aiResponse.order.customer_name,
                     address: aiResponse.order.addr,
                     latitude: aiResponse.order.lat,
                     longitude: aiResponse.order.lon,
-                    product_id: aiResponse.order.p_id || 1,
+                    product_id: aiResponse.order.p_id,
                     quantity: aiResponse.order.qty,
                     total_amount: aiResponse.order.total_amount,
-                    discount: aiResponse.order.discount,
+                    discount: aiResponse.order.discount * aiResponse.order.qty,
                     notes: aiResponse.order.notes,
-                    scheduled_at: aiResponse.order.scheduled_at
+                    rider_id: riderId
                 });
-                
-                // Limpiar memoria después de un pedido exitoso
                 await storageService.clearHistory(phone);
+                aiResponse.reply += "\n\n✅ ¡Pedido confirmado! Tu gas ya va en camino. 🛵💨";
             }
 
-            // 11. Enviar WhatsApp Final usando el TOKEN DINÁMICO de la cuenta
-            await externalService.sendWhatsAppMessage(recipient, aiResponse.reply, whatsappToken);
+            await storageService.saveMessage(phone, 'assistant', aiResponse.reply);
+            
+            if (whatsappToken && whatsappToken !== 'TEST_TOKEN') {
+                await externalService.sendWhatsAppMessage(recipient, aiResponse.reply, whatsappToken);
+            }
 
-            return { success: true };
-
+            return { success: true, response: aiResponse.reply, fullResponse: aiResponse };
         } catch (error) {
-            console.error('Error in FlowService:', error);
+            console.error('Error en FlowService:', error);
             throw error;
         }
     }
@@ -139,32 +135,22 @@ ${productsTxt}
     normalizeInput(data) {
         const body = data.data || {};
         const msg = body.message || {};
+        const key = body.key || {};
         
-        let type = "text";
-        let lat = null;
-        let lon = null;
-        let text = msg.conversation || (msg.extendedTextMessage ? msg.extendedTextMessage.text : "");
-
-        if (msg.locationMessage) {
-            type = "location";
-            lat = msg.locationMessage.degreesLatitude;
-            lon = msg.locationMessage.degreesLongitude;
-            text = "[UBICACIÓN GPS ENVIADA POR EL CLIENTE]";
-        }
-
-        const rawFrom = body.senderJid ? body.senderJid.split('@')[0] : (body.from ? body.from.split('@')[0] : "");
+        const rawFrom = (body.senderJid || body.from || "").split('@')[0];
         const digits = rawFrom.replace(/\D/g, '');
-        const fullRecipient = digits.length === 9 ? '51' + digits : (digits.startsWith('51') ? digits : '51' + digits);
         const nineDigits = digits.slice(-9);
 
         return {
-            type,
-            lat,
-            lon,
-            text,
-            recipient: fullRecipient,
+            type: msg.locationMessage ? "location" : (msg.imageMessage ? "image" : (msg.audioMessage ? "audio" : "text")),
+            lat: msg.locationMessage?.degreesLatitude || null,
+            lon: msg.locationMessage?.degreesLongitude || null,
+            text: msg.conversation || msg.extendedTextMessage?.text || msg.imageMessage?.caption || "",
+            recipient: digits,
             phone: nineDigits,
-            pushName: body.pushName || "Cliente"
+            pushName: body.pushName || "Cliente",
+            fromMe: key.fromMe || false,
+            isStatus: (key.remoteJid || "").includes('@status')
         };
     }
 }

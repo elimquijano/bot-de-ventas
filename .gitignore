@@ -1,3 +1,8 @@
 .env
 accounts.js
 node_modules
+db
+tests
+*.json
+*.log
+test-brain.js

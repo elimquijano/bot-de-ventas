@@ -32,6 +32,26 @@ class ExternalService {
         }
     }
 
+    async getPendingSales() {
+        try {
+            const res = await this.adminApi.get('/sales?status=pending&is_delivery=1&per_page=-1');
+            return res.data.data || [];
+        } catch (error) {
+            console.error('Error fetching pending sales:', error.message);
+            return [];
+        }
+    }
+
+    async cancelSale(saleId) {
+        try {
+            const res = await this.adminApi.post(`/sales/${saleId}/cancel`);
+            return res.data;
+        } catch (error) {
+            console.error(`Error cancelling sale ${saleId}:`, error.response?.data || error.message);
+            return { error: true };
+        }
+    }
+
     async getReverseGeocoding(lat, lon) {
         try {
             const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?access_token=${config.MAPBOX_ACCESS_TOKEN}&limit=1`;
@@ -45,9 +65,10 @@ class ExternalService {
 
     async registerOrder(orderData) {
         try {
+            // Recibe rider_id dinámicamente o usa uno por defecto
             const res = await this.adminApi.post('/sales/quick-order', {
                 ...orderData,
-                rider_id: 2
+                rider_id: orderData.rider_id || 2
             });
             return res.data;
         } catch (error) {
@@ -56,7 +77,18 @@ class ExternalService {
         }
     }
 
+    async getOpenCashRegisters() {
+        try {
+            const res = await this.adminApi.get('/cash-registers?status=open');
+            return res.data.data || [];
+        } catch (error) {
+            console.error('Error fetching cash registers:', error.message);
+            return [];
+        }
+    }
+
     async sendWhatsAppMessage(recipient, body, token) {
+
         try {
             // Cada llamada usa su propio token dinámico
             const res = await axios.post(`${this.whatsappApiBaseUrl}/messages/text`, 
@@ -67,6 +99,19 @@ class ExternalService {
         } catch (error) {
             console.error('Error sending WhatsApp message:', error.response?.data || error.message);
             return { error: true };
+        }
+    }
+
+    async downloadMedia(mediaKey, token) {
+        try {
+            const res = await axios.get(`${this.whatsappApiBaseUrl}/messages/download/${mediaKey}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                responseType: 'arraybuffer'
+            });
+            return Buffer.from(res.data).toString('base64');
+        } catch (error) {
+            console.error('Error downloading media:', error.message);
+            return null;
         }
     }
 }
