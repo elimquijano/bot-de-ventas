@@ -91,23 +91,24 @@ class ExternalService {
     async sendWhatsAppMessage(recipient, body, token) {
         try {
             const url = `${this.whatsappApiBaseUrl}/messages/text`;
+            // Extraer solo los números del recipient (ej: 51929804291)
             const cleanNumber = recipient.split('@')[0];
             
-            console.log('[ExternalService] Intentando enviar mensaje:');
+            console.log('[ExternalService] Intentando enviar mensaje (Modo compatible):');
             console.log(` - URL: ${url}`);
-            console.log(` - Recipient: ${recipient}`);
-            console.log(` - Number: ${cleanNumber}`);
+            console.log(` - Recipient: ${cleanNumber}`);
 
-            // Enviamos un objeto más robusto para compatibilidad con distintas APIs
+            // Payload exacto como en el curl que sí funciona
             const payload = { 
-                recipient: recipient,
-                number: cleanNumber,
-                body: body,
-                text: body // Algunas APIs usan 'text' en lugar de 'body'
+                recipient: cleanNumber,
+                body: body
             };
 
             const res = await axios.post(url, payload, { 
-                headers: { 'Authorization': `Bearer ${token}` } 
+                headers: { 
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                } 
             });
 
             console.log('[ExternalService] Respuesta exitosa de la API de WhatsApp:', res.data);
@@ -116,7 +117,9 @@ class ExternalService {
             console.error('[ExternalService] Error enviando mensaje WhatsApp:');
             if (error.response) {
                 console.error(' - Status:', error.response.status);
-                console.error(' - Data:', JSON.stringify(error.response.data, null, 2));
+                // Si la respuesta es HTML (como el error 504), no la imprimimos toda
+                const isHtml = typeof error.response.data === 'string' && error.response.data.includes('<html');
+                console.error(' - Data:', isHtml ? '[Respuesta HTML (ej: Gateway Timeout)]' : JSON.stringify(error.response.data, null, 2));
             } else {
                 console.error(' - Error Message:', error.message);
             }
