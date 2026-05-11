@@ -121,15 +121,27 @@ RESPONDE SOLO EN JSON:
     }
 
     normalizeInput(data) {
-        const body = data.data || {};
+        const body = data.data || data || {}; // Soporte si la data viene directa o en .data
         const msg = body.message || {};
-        const rawFrom = (body.senderJid || body.from || "").split('@')[0];
+        
+        // Extraer texto de múltiples fuentes posibles
+        const text = msg.conversation || 
+                     msg.extendedTextMessage?.text || 
+                     msg.imageMessage?.caption || 
+                     msg.videoMessage?.caption || 
+                     msg.buttonsResponseMessage?.selectedButtonId || 
+                     msg.listResponseMessage?.singleSelectReply?.selectedRowId || 
+                     body.text || 
+                     "";
+
+        const rawFrom = (body.senderJid || body.from || body.key?.remoteJid || "").split('@')[0];
+        
         return {
             type: msg.locationMessage ? "location" : "text",
             lat: msg.locationMessage?.degreesLatitude || null,
             lon: msg.locationMessage?.degreesLongitude || null,
-            text: msg.conversation || msg.extendedTextMessage?.text || "",
-            recipient: (body.senderJid || body.from || ""),
+            text: text,
+            recipient: (body.senderJid || body.from || body.key?.remoteJid || ""),
             phone: rawFrom.replace(/\D/g, '').slice(-9),
             pushName: body.pushName || "Cliente",
             fromMe: body.key?.fromMe || false,

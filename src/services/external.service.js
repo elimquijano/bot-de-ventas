@@ -89,17 +89,37 @@ class ExternalService {
     }
 
     async sendWhatsAppMessage(recipient, body, token) {
-
         try {
-            console.log('[ExternalService] Enviando mensaje WhatsApp:', { recipient, bodyLength: body?.length });
-            // Cada llamada usa su propio token dinámico
-            const res = await axios.post(`${this.whatsappApiBaseUrl}/messages/text`, 
-                { recipient, body }, 
-                { headers: { 'Authorization': `Bearer ${token}` } }
-            );
+            const url = `${this.whatsappApiBaseUrl}/messages/text`;
+            const cleanNumber = recipient.split('@')[0];
+            
+            console.log('[ExternalService] Intentando enviar mensaje:');
+            console.log(` - URL: ${url}`);
+            console.log(` - Recipient: ${recipient}`);
+            console.log(` - Number: ${cleanNumber}`);
+
+            // Enviamos un objeto más robusto para compatibilidad con distintas APIs
+            const payload = { 
+                recipient: recipient,
+                number: cleanNumber,
+                body: body,
+                text: body // Algunas APIs usan 'text' en lugar de 'body'
+            };
+
+            const res = await axios.post(url, payload, { 
+                headers: { 'Authorization': `Bearer ${token}` } 
+            });
+
+            console.log('[ExternalService] Respuesta exitosa de la API de WhatsApp:', res.data);
             return res.data;
         } catch (error) {
-            console.error('[ExternalService] Error enviando mensaje WhatsApp:', error.response?.data || error.message);
+            console.error('[ExternalService] Error enviando mensaje WhatsApp:');
+            if (error.response) {
+                console.error(' - Status:', error.response.status);
+                console.error(' - Data:', JSON.stringify(error.response.data, null, 2));
+            } else {
+                console.error(' - Error Message:', error.message);
+            }
             return { error: true };
         }
     }
