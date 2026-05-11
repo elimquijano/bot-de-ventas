@@ -65,6 +65,7 @@ class ExternalService {
 
     async registerOrder(orderData) {
         try {
+            console.log('[ExternalService] Registrando pedido:', orderData);
             // Recibe rider_id dinámicamente o usa uno por defecto
             const res = await this.adminApi.post('/sales/quick-order', {
                 ...orderData,
@@ -72,7 +73,7 @@ class ExternalService {
             });
             return res.data;
         } catch (error) {
-            console.error('Error registering order:', error.response?.data || error.message);
+            console.error('[ExternalService] Error registrando pedido:', error.response?.data || error.message);
             return { error: true };
         }
     }
@@ -82,7 +83,7 @@ class ExternalService {
             const res = await this.adminApi.get('/cash-registers?status=open');
             return res.data.data || [];
         } catch (error) {
-            console.error('Error fetching cash registers:', error.message);
+            console.error('[ExternalService] Error fetching cash registers:', error.message);
             return [];
         }
     }
@@ -90,6 +91,7 @@ class ExternalService {
     async sendWhatsAppMessage(recipient, body, token) {
 
         try {
+            console.log('[ExternalService] Enviando mensaje WhatsApp:', { recipient, bodyLength: body?.length });
             // Cada llamada usa su propio token dinámico
             const res = await axios.post(`${this.whatsappApiBaseUrl}/messages/text`, 
                 { recipient, body }, 
@@ -97,7 +99,7 @@ class ExternalService {
             );
             return res.data;
         } catch (error) {
-            console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+            console.error('[ExternalService] Error enviando mensaje WhatsApp:', error.response?.data || error.message);
             return { error: true };
         }
     }

@@ -15,6 +15,7 @@ class WebhookController {
 
         try {
             console.log(`--- Nueva Interacción [Cuenta: ${id}] ---`);
+            console.log('Cuerpo de la petición:', JSON.stringify(req.body, null, 2));
             
             // 2. Ejecutar el flujo inyectando el token específico de este webhook
             await flowService.execute(req.body, whatsappToken);

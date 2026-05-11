@@ -19,9 +19,11 @@ class GroqService {
                 headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' }
             });
 
-            return JSON.parse(response.data.choices[0].message.content);
+            const content = response.data.choices[0].message.content;
+            console.log('[GroqService] Respuesta cruda:', content);
+            return JSON.parse(content);
         } catch (error) {
-            console.error('Error calling Groq:', error.response?.data || error.message);
+            console.error('[GroqService] Error:', error.response?.data || error.message);
             throw error;
         }
     }
