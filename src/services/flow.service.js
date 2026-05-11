@@ -8,18 +8,50 @@ class FlowService {
             const input = this.normalizeInput(inputData);
             console.log('[FlowService] Entrada normalizada:', input);
 
-            if (input.isStatus || (!input.text && input.type === 'text')) {
-                console.log('[FlowService] Mensaje ignorado (status o sin texto).');
+            // 1. FILTROS DE SEGURIDAD (Ignorar lo que no sea un mensaje relevante)
+            
+            // Ignorar si no es un evento de mensaje (si viene el tipo de evento)
+            const ignoredEvents = ['presence.update', 'receipt.update', 'messages.update', 'call'];
+            if (input.eventType && ignoredEvents.includes(input.eventType)) {
+                console.log(`[FlowService] Ignorando evento de sistema: ${input.eventType}`);
+                return { success: true, ignored: true };
+            }
+
+            // Ignorar estados de WhatsApp
+            if (input.isStatus) {
+                console.log('[FlowService] Ignorando actualización de estado.');
+                return { success: true, ignored: true };
+            }
+
+            // Ignorar grupos (normalmente el bot es 1-a-1)
+            if (input.isGroup) {
+                console.log('[FlowService] Ignorando interacción en grupo.');
+                return { success: true, ignored: true };
+            }
+
+            // Ignorar si no tiene contenido de mensaje (texto o ubicación)
+            if (!input.hasMessage) {
+                console.log('[FlowService] No tiene contenido de mensaje, ignorando.');
                 return { success: true, ignored: true };
             }
 
             let { phone, recipient, text, pushName, type, lat, lon, fromMe } = input;
+
+            // 2. GESTIÓN DE MENSAJES PROPIOS (Salientes)
+            // Si el mensaje es enviado por "mí" (la cuenta del bot, manual o automáticamente)
             if (fromMe) {
-                console.log('[FlowService] Mensaje enviado por mí, guardando en historial...');
+                console.log('[FlowService] Mensaje saliente detectado (manual o del bot), guardando historial...');
                 if (text) await storageService.saveMessage(phone, 'assistant', text);
                 return { success: true, fromMe: true };
             }
 
+            // Ignorar si es un mensaje de texto vacío (y no es ubicación)
+            if (type === 'text' && !text.trim()) {
+                console.log('[FlowService] Mensaje de texto vacío, ignorando.');
+                return { success: true, ignored: true };
+            }
+
+            console.log('[FlowService] Procesando mensaje entrante de:', phone);
             console.log('[FlowService] Obteniendo datos externos (productos, clientes, etc)...');
             const [allProducts, allClients, allPendingSales, openRegisters] = await Promise.all([
                 externalService.getProducts(),
@@ -121,10 +153,34 @@ RESPONDE SOLO EN JSON:
     }
 
     normalizeInput(data) {
-        const body = data.data || data || {}; // Soporte si la data viene directa o en .data
-        const msg = body.message || {};
+        // 1. Identificar la estructura de la data (Evolution API, Baileys o similar)
+        const eventType = data.event || data.type || null;
+        let body = data.data || data || {};
         
-        // Extraer texto de múltiples fuentes posibles
+        // Si data.data es un array (común en Baileys/Evolution), tomamos el primer elemento
+        if (Array.isArray(body)) {
+            body = body[0];
+        } else if (body.messages && Array.isArray(body.messages)) {
+            body = body.messages[0];
+        }
+
+        const msg = body.message || {};
+        const key = body.key || {};
+
+        // 2. Extraer el JID remoto (la otra parte de la conversación)
+        const remoteJid = key.remoteJid || body.remoteJid || body.from || body.senderJid || "";
+        
+        // 3. Identificar si es un mensaje saliente (enviado por la cuenta oficial)
+        // Probamos varias formas comunes en diferentes APIs
+        const fromMe = 
+            key.fromMe === true || 
+            body.fromMe === true || 
+            data.fromMe === true ||
+            eventType === 'message.sent' || 
+            eventType === 'send.message' ||
+            body.isOutbound === true;
+
+        // 4. Extraer texto de múltiples fuentes posibles
         const text = msg.conversation || 
                      msg.extendedTextMessage?.text || 
                      msg.imageMessage?.caption || 
@@ -134,18 +190,23 @@ RESPONDE SOLO EN JSON:
                      body.text || 
                      "";
 
-        const rawFrom = (body.senderJid || body.from || body.key?.remoteJid || "").split('@')[0];
-        
+        // 5. Limpiar el número de teléfono
+        const rawFrom = remoteJid.split('@')[0];
+        const phone = rawFrom.replace(/\D/g, '').slice(-9);
+
         return {
+            eventType,
             type: msg.locationMessage ? "location" : "text",
             lat: msg.locationMessage?.degreesLatitude || null,
             lon: msg.locationMessage?.degreesLongitude || null,
             text: text,
-            recipient: (body.senderJid || body.from || body.key?.remoteJid || ""),
-            phone: rawFrom.replace(/\D/g, '').slice(-9),
+            recipient: remoteJid,
+            phone: phone,
             pushName: body.pushName || "Cliente",
-            fromMe: body.key?.fromMe || false,
-            isStatus: (body.key?.remoteJid || "").includes('@status')
+            fromMe: fromMe,
+            isStatus: remoteJid.includes('@status'),
+            isGroup: remoteJid.includes('@g.us'),
+            hasMessage: !!(body.message || body.text || msg.locationMessage || msg.extendedTextMessage)
         };
     }
 }
