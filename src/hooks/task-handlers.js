@@ -13,7 +13,7 @@ async function handleResponder(accountConfig, history, message) {
     - Responde de forma amable y servicial.
     - Usa la información del historial para dar continuidad.
     - Si no tienes la respuesta, indica que consultarás con un humano.
-    
+
     Responde ÚNICAMENTE en JSON:
     {
         "content": "Tu respuesta aquí...",
@@ -39,6 +39,7 @@ async function handleResponder(accountConfig, history, message) {
 
 async function handleConsultarProductos(accountConfig, history, message, data) {
   const { auth, endpoints } = accountConfig.permissions.consultar_productos;
+  const { role, prompt, context } = accountConfig.agent;
 
   try {
     console.log("[Task: Consultar] Obteniendo productos...");
@@ -51,8 +52,6 @@ async function handleConsultarProductos(accountConfig, history, message, data) {
         content: "En este momento no tenemos productos con stock disponible.",
       };
     }
-
-    const { role, prompt, context } = accountConfig.agent;
 
     const systemPrompt = `
         ROL: ${role}
@@ -108,8 +107,14 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
 
         Estás procesando un pedido de un cliente que escribe por WhatsApp.
 
-        DATO IMPORTANTE: El número de WhatsApp del cliente es el mismo número con el que está chateando.
-        Búscalo en la lista de clientes por su número. NO le pidas su teléfono, ya lo tienes.
+        REGLAS IMPORTANTES:
+        1. El número de WhatsApp del cliente ES su número de teléfono. Búscalo en la lista de clientes por ese número. NUNCA le pidas su teléfono.
+        2. Para la dirección de entrega, SIEMPRE pide que comparta su ubicación usando el botón de ubicación de WhatsApp (📍). No aceptes direcciones escritas en texto libre porque no son precisas.
+        3. Cuando en el historial aparezca un mensaje con formato [UBICACIÓN COMPARTIDA: <dirección> | lat=X, lon=Y], usa esa dirección para el pedido. Ya fue convertida a dirección legible automáticamente.
+        4. Revisa el historial completo — el cliente puede haber elegido producto y cantidad antes de llegar aquí. No vuelvas a preguntar lo que ya está en el historial.
+        5. Cuando tengas cliente identificado (o datos nuevos si no está registrado), producto, cantidad y ubicación compartida → acción "create_order".
+        6. Si falta algún dato, pide solo ese dato específico → acción "collect_data".
+        7. Usa la primera caja abierta disponible.
 
         CLIENTES REGISTRADOS EN EL SISTEMA:
         ${JSON.stringify(clients.map((c) => ({ id: c.id, name: c.name, phone: c.phone, address: c.address })))}
@@ -117,18 +122,8 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
         CAJAS ABIERTAS:
         ${JSON.stringify(cashRegisters.map((c) => ({ id: c.id, name: c.name })))}
 
-        HISTORIAL DE CONVERSACIÓN (contiene el producto y cantidad ya elegidos si los hay):
+        HISTORIAL DE CONVERSACIÓN:
         ${JSON.stringify(history)}
-
-        INSTRUCCIONES:
-        1. Revisa el historial — puede que el cliente ya eligió producto y cantidad antes de llegar aquí.
-        2. Busca al cliente por su número de WhatsApp en la lista de clientes registrados.
-        3. Si está registrado, usa su dirección guardada y confirma el pedido.
-        4. Si no está registrado, pide solo lo que falta: nombre y dirección.
-        5. Cuando tengas: cliente identificado (o datos nuevos), producto, cantidad y dirección → acción "create_order".
-        6. Si falta algo, pide solo ese dato específico → acción "collect_data".
-        7. Nunca pidas el número de teléfono, ya lo tienes del chat.
-        8. Usa la caja abierta disponible. Si hay varias, usa la primera.
 
         Responde ÚNICAMENTE en JSON:
         {
@@ -139,6 +134,8 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
                 "client_name": "",
                 "client_phone": "",
                 "address": "",
+                "lat": null,
+                "lon": null,
                 "products": [{ "id": 0, "name": "", "quantity": 0, "price": 0 }],
                 "cash_register_id": null,
                 "rider_id": 2

@@ -2,6 +2,7 @@ const storageService = require("./storage.service");
 const externalService = require("./external.service");
 const orchestratorService = require("./orchestrator.service");
 const { checkIntention } = require("../hooks/client-intention");
+const config = require("../config/envs");
 
 class FlowService {
   async execute(inputData, accountConfig) {
@@ -13,15 +14,31 @@ class FlowService {
 
       if (this.shouldIgnore(input)) {
         console.log(
-          `[FlowService] Mensaje ignorado. Razón: evento=${input.eventType}, fromMe=${input.fromMe}, isGroup=${input.isGroup}, isStatus=${input.isStatus}, hasMessage=${input.hasMessage}`,
+          `[FlowService] Mensaje ignorado. evento=${input.eventType}, fromMe=${input.fromMe}, isGroup=${input.isGroup}, isStatus=${input.isStatus}, hasMessage=${input.hasMessage}`,
         );
         return { success: true, ignored: true };
       }
 
-      const { phone, recipient, text, fromMe, type } = input;
+      const { phone, recipient, type, text, location } = input;
 
       const history = await storageService.getChatHistory(phone);
-      const userContent = type === "location" ? "[UBICACIÓN GPS]" : text;
+
+      let userContent;
+      if (type === "location" && location) {
+        console.log(
+          `[FlowService] Ubicación recibida de ${phone}: lat=${location.lat}, lon=${location.lon}`,
+        );
+        const address = config.MAPBOX_ACCESS_TOKEN
+          ? await externalService.getReverseGeocoding(
+              location.lat,
+              location.lon,
+              config.MAPBOX_ACCESS_TOKEN,
+            )
+          : "Dirección no disponible";
+        userContent = `[UBICACIÓN COMPARTIDA: ${address} | lat=${location.lat}, lon=${location.lon}]`;
+      } else {
+        userContent = text;
+      }
 
       console.log(`[FlowService] Nuevo mensaje de ${phone}: "${userContent}"`);
 
@@ -107,28 +124,33 @@ class FlowService {
     const eventType = data.event || null;
     const body = data.data || {};
     const msg = body.message || {};
-
     const senderJid = body.senderJid || "";
     const senderNumber = body.senderNumber || senderJid.split("@")[0] || "";
     const phone = senderNumber.replace(/\D/g, "");
-
     const fromMe = body.fromMe === true;
-
     const isGroup =
       senderJid.includes("@g.us") || (body.from || "").includes("@g.us");
-
     const isStatus =
       senderJid.includes("@status") || (body.from || "").includes("@status");
+    const locationMsg = msg.locationMessage || null;
 
-    const text =
-      msg.conversation ||
-      msg.extendedTextMessage?.text ||
-      msg.imageMessage?.caption ||
-      msg.videoMessage?.caption ||
-      msg.buttonsResponseMessage?.selectedButtonId ||
-      msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
-      body.text ||
-      "";
+    const text = locationMsg
+      ? ""
+      : msg.conversation ||
+        msg.extendedTextMessage?.text ||
+        msg.imageMessage?.caption ||
+        msg.videoMessage?.caption ||
+        msg.buttonsResponseMessage?.selectedButtonId ||
+        msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
+        body.text ||
+        "";
+
+    const location = locationMsg
+      ? {
+          lat: locationMsg.degreesLatitude,
+          lon: locationMsg.degreesLongitude,
+        }
+      : null;
 
     const hasMessage = !!(
       msg.conversation ||
@@ -143,8 +165,9 @@ class FlowService {
 
     return {
       eventType,
-      type: msg.locationMessage ? "location" : "text",
+      type: locationMsg ? "location" : "text",
       text,
+      location,
       recipient: senderJid,
       phone,
       fromMe,
@@ -160,21 +183,30 @@ class FlowService {
     const value = change?.value;
     const msg = value?.messages?.[0];
 
-    if (!msg) {
-      return this._emptyInput("message.received");
-    }
+    if (!msg) return this._emptyInput("message.received");
 
     const phone = msg.from?.replace(/\D/g, "") || "";
-    const text =
-      msg.text?.body ||
-      msg.interactive?.button_reply?.title ||
-      msg.interactive?.list_reply?.title ||
-      "";
+    const isLocation = msg.type === "location";
+
+    const text = isLocation
+      ? ""
+      : msg.text?.body ||
+        msg.interactive?.button_reply?.title ||
+        msg.interactive?.list_reply?.title ||
+        "";
+
+    const location = isLocation
+      ? {
+          lat: msg.location?.latitude,
+          lon: msg.location?.longitude,
+        }
+      : null;
 
     return {
       eventType: "message.received",
-      type: msg.type === "location" ? "location" : "text",
+      type: isLocation ? "location" : "text",
       text,
+      location,
       recipient: `${phone}@s.whatsapp.net`,
       phone,
       fromMe: false,
@@ -187,19 +219,27 @@ class FlowService {
   _normalizeTelegram(data) {
     const msg = data.message || data.edited_message;
 
-    if (!msg) {
-      return this._emptyInput(null);
-    }
+    if (!msg) return this._emptyInput(null);
 
     const phone = String(msg.chat?.id || "");
-    const text = msg.text || msg.caption || "";
+    const isLocation = !!msg.location;
     const isGroup =
       msg.chat?.type === "group" || msg.chat?.type === "supergroup";
 
+    const text = isLocation ? "" : msg.text || msg.caption || "";
+
+    const location = isLocation
+      ? {
+          lat: msg.location.latitude,
+          lon: msg.location.longitude,
+        }
+      : null;
+
     return {
       eventType: "message.received",
-      type: msg.location ? "location" : "text",
+      type: isLocation ? "location" : "text",
       text,
+      location,
       recipient: phone,
       phone,
       fromMe: false,
@@ -214,6 +254,7 @@ class FlowService {
       eventType,
       type: "text",
       text: "",
+      location: null,
       recipient: "",
       phone: "",
       fromMe: false,
