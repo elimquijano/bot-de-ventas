@@ -116,7 +116,6 @@ async function handleAgendarPedido(
       ),
     ]);
 
-    // Buscar cliente por teléfono — comparar últimos 9 dígitos
     const senderShort = phone.replace(/\D/g, "").slice(-9);
     const matchingClients = allClients.filter(
       (c) => (c.phone || "").replace(/\D/g, "").slice(-9) === senderShort,
@@ -141,6 +140,8 @@ async function handleAgendarPedido(
         5. Si hay múltiples clientes con el mismo teléfono, pregunta al cliente cuál de los nombres es el suyo.
         6. Cuando tengas TODOS los datos (cliente o nombre nuevo, producto, cantidad, ubicación compartida) → action: "create_order".
         7. Si falta algún dato → action: "collect_data" pidiendo solo ese dato específico.
+        8. En "collected.client_name": usa el nombre del cliente registrado si lo encontraste, o el nombre que mencionó en el chat. Si no hay ninguno, deja vacío.
+        9. NUNCA menciones nombres de repartidores, IDs internos, nombres de cajas ni datos del sistema en tus mensajes al cliente.
 
         CLIENTES ENCONTRADOS CON ESTE NÚMERO:
         ${
@@ -162,18 +163,14 @@ async function handleAgendarPedido(
           .map((p) => `- ID:${p.id} | ${p.name} | S/${p.price}`)
           .join("\n")}
 
-        CAJA ABIERTA: ${
-          openCashRegister
-            ? `ID:${cashRegisterId} - Repartidor: ${openCashRegister.opened_by?.full_name}`
-            : "Sin caja abierta"
-        }
+        CAJA ABIERTA: ${openCashRegister ? `ID:${cashRegisterId}` : "Sin caja abierta"}
 
         HISTORIAL DE CONVERSACIÓN:
         ${JSON.stringify(history)}
 
         Responde ÚNICAMENTE en JSON:
         {
-            "content": "Tu mensaje al usuario...",
+            "content": "Tu mensaje al usuario (sin datos internos del sistema)...",
             "action": "collect_data" | "create_order" | "ask_client_selection",
             "collected": {
                 "client_id": null,
@@ -212,13 +209,20 @@ async function handleAgendarPedido(
         };
       }
 
+      // Resolver customer_name: cliente registrado > mencionado en chat > primera parte de dirección Mapbox
+      const customerName =
+        collected.client_name ||
+        matchingClients[0]?.name ||
+        (collected.address
+          ? collected.address.split(",")[0].trim()
+          : "Cliente");
+
       const now = new Date();
       const scheduledAt = now.toISOString().slice(0, 16);
 
       const orderPayload = {
         phone: senderShort,
-        customer_name:
-          collected.client_name || matchingClients[0]?.name || "Cliente",
+        customer_name: customerName,
         address: collected.address,
         latitude: collected.lat,
         longitude: collected.lon,
@@ -245,7 +249,7 @@ async function handleAgendarPedido(
 
       return {
         action: "message",
-        content: `¡Pedido registrado con éxito! 🎉 Tu número de pedido es #${order.id || order.data?.id || "N/A"}. El repartidor ${openCashRegister?.opened_by?.full_name || ""} saldrá en breve. 🚚`,
+        content: aiResponse.content,
         data: order,
       };
     }
