@@ -1,144 +1,216 @@
-const axios = require('axios');
-const config = require('../config/envs');
+const axios = require("axios");
 
 class ExternalService {
-    constructor() {
-        this.adminApi = axios.create({
-            baseURL: config.ADMIN_API_BASE_URL,
-            headers: { 'Authorization': `Bearer ${config.ADMIN_API_TOKEN}` }
-        });
-        
-        // Base URL de la API de WhatsApp (puerto 3001)
-        this.whatsappApiBaseUrl = config.WHATSAPP_API_BASE_URL;
+  _buildHeaders(auth) {
+    switch (auth.type) {
+      case "bearer":
+        return {
+          Authorization: `Bearer ${auth.token}`,
+          "Content-Type": "application/json",
+        };
+      case "api_key":
+        return {
+          [auth.header]: auth.token,
+          "Content-Type": "application/json",
+        };
+      case "basic":
+        const encoded = Buffer.from(`${auth.user}:${auth.password}`).toString(
+          "base64",
+        );
+        return {
+          Authorization: `Basic ${encoded}`,
+          "Content-Type": "application/json",
+        };
+      default:
+        return { "Content-Type": "application/json" };
     }
+  }
 
-    async getProducts() {
-        try {
-            const res = await this.adminApi.get('/products?per_page=-1');
-            return res.data.data || [];
-        } catch (error) {
-            console.error('Error fetching products:', error.message);
-            return [];
-        }
+  async get(endpoint, auth) {
+    try {
+      const res = await axios.get(endpoint, {
+        headers: this._buildHeaders(auth),
+      });
+      return res.data.data || res.data || [];
+    } catch (error) {
+      console.error(
+        `[ExternalService] GET ${endpoint} falló:`,
+        error.response?.status,
+        error.message,
+      );
+      throw error;
     }
+  }
 
-    async getClients() {
-        try {
-            const res = await this.adminApi.get('/clients?per_page=-1');
-            return res.data.data || [];
-        } catch (error) {
-            console.error('Error fetching clients:', error.message);
-            return [];
-        }
+  async post(endpoint, auth, body) {
+    try {
+      const res = await axios.post(endpoint, body, {
+        headers: this._buildHeaders(auth),
+      });
+      return res.data;
+    } catch (error) {
+      console.error(
+        `[ExternalService] POST ${endpoint} falló:`,
+        error.response?.status,
+        error.message,
+      );
+      throw error;
     }
+  }
 
-    async getPendingSales() {
-        try {
-            const res = await this.adminApi.get('/sales?status=pending&is_delivery=1&per_page=-1');
-            return res.data.data || [];
-        } catch (error) {
-            console.error('Error fetching pending sales:', error.message);
-            return [];
-        }
+  async getReverseGeocoding(lat, lon, mapboxToken) {
+    try {
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?access_token=${mapboxToken}&limit=1`;
+      const res = await axios.get(url);
+      return res.data.features[0]?.place_name || "No enviada";
+    } catch (error) {
+      console.error("[ExternalService] Error in geocoding:", error.message);
+      return "No enviada";
     }
+  }
 
-    async cancelSale(saleId) {
-        try {
-            const res = await this.adminApi.post(`/sales/${saleId}/cancel`);
-            return res.data;
-        } catch (error) {
-            console.error(`Error cancelling sale ${saleId}:`, error.response?.data || error.message);
-            return { error: true };
-        }
+  async sendMessage(output_channel, recipient, content) {
+    switch (output_channel.type) {
+      case "whatsapp_baileys":
+        return await this._sendWhatsappBaileys(
+          output_channel,
+          recipient,
+          content,
+        );
+      case "whatsapp_cloud":
+        return await this._sendWhatsappCloud(
+          output_channel,
+          recipient,
+          content,
+        );
+      case "telegram":
+        return await this._sendTelegram(output_channel, recipient, content);
+      default:
+        throw new Error(
+          `[ExternalService] Canal de salida desconocido: ${output_channel.type}`,
+        );
     }
+  }
 
-    async getReverseGeocoding(lat, lon) {
-        try {
-            const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lon},${lat}.json?access_token=${config.MAPBOX_ACCESS_TOKEN}&limit=1`;
-            const res = await axios.get(url);
-            return res.data.features[0]?.place_name || "No enviada";
-        } catch (error) {
-            console.error('Error in geocoding:', error.message);
-            return "No enviada";
-        }
+  async _sendWhatsappBaileys(output_channel, recipient, content) {
+    try {
+      const url = `${output_channel.api_url}/messages/text`;
+      const cleanNumber = recipient.split("@")[0];
+
+      console.log("[ExternalService] Enviando mensaje Baileys:");
+      console.log(` - URL: ${url}`);
+      console.log(` - Recipient: ${cleanNumber}`);
+
+      const res = await axios.post(
+        url,
+        { recipient: cleanNumber, body: content },
+        {
+          headers: {
+            Authorization: `Bearer ${output_channel.api_token}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      console.log("[ExternalService] Mensaje enviado:", res.data);
+      return res.data;
+    } catch (error) {
+      console.error("[ExternalService] Error enviando mensaje Baileys:");
+      if (error.response) {
+        const isHtml =
+          typeof error.response.data === "string" &&
+          error.response.data.includes("<html");
+        console.error(" - Status:", error.response.status);
+        console.error(
+          " - Data:",
+          isHtml
+            ? "[Respuesta HTML]"
+            : JSON.stringify(error.response.data, null, 2),
+        );
+      } else {
+        console.error(" - Error:", error.message);
+      }
+      throw error;
     }
+  }
 
-    async registerOrder(orderData) {
-        try {
-            console.log('[ExternalService] Registrando pedido:', orderData);
-            // Recibe rider_id dinámicamente o usa uno por defecto
-            const res = await this.adminApi.post('/sales/quick-order', {
-                ...orderData,
-                rider_id: orderData.rider_id || 2
-            });
-            return res.data;
-        } catch (error) {
-            console.error('[ExternalService] Error registrando pedido:', error.response?.data || error.message);
-            return { error: true };
-        }
+  async _sendWhatsappCloud(output_channel, recipient, content) {
+    try {
+      const url = `${output_channel.api_url}/messages`;
+      const cleanNumber = recipient.split("@")[0];
+
+      console.log("[ExternalService] Enviando mensaje WhatsApp Cloud:");
+      console.log(` - URL: ${url}`);
+      console.log(` - Recipient: ${cleanNumber}`);
+
+      const res = await axios.post(
+        url,
+        {
+          messaging_product: "whatsapp",
+          to: cleanNumber,
+          type: "text",
+          text: { body: content },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${output_channel.api_token}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      console.log("[ExternalService] Mensaje Cloud enviado:", res.data);
+      return res.data;
+    } catch (error) {
+      console.error(
+        "[ExternalService] Error enviando mensaje Cloud:",
+        error.response?.data || error.message,
+      );
+      throw error;
     }
+  }
 
-    async getOpenCashRegisters() {
-        try {
-            const res = await this.adminApi.get('/cash-registers?status=open');
-            return res.data.data || [];
-        } catch (error) {
-            console.error('[ExternalService] Error fetching cash registers:', error.message);
-            return [];
-        }
+  async _sendTelegram(output_channel, recipient, content) {
+    try {
+      const url = `https://api.telegram.org/bot${output_channel.api_token}/sendMessage`;
+
+      console.log("[ExternalService] Enviando mensaje Telegram:");
+      console.log(` - Recipient: ${recipient}`);
+
+      const res = await axios.post(url, {
+        chat_id: recipient,
+        text: content,
+      });
+
+      console.log("[ExternalService] Mensaje Telegram enviado:", res.data);
+      return res.data;
+    } catch (error) {
+      console.error(
+        "[ExternalService] Error enviando mensaje Telegram:",
+        error.response?.data || error.message,
+      );
+      throw error;
     }
+  }
 
-    async sendWhatsAppMessage(recipient, body, token) {
-        try {
-            const url = `${this.whatsappApiBaseUrl}/messages/text`;
-            // Extraer solo los números del recipient (ej: 51929804291)
-            const cleanNumber = recipient.split('@')[0];
-            
-            console.log('[ExternalService] Intentando enviar mensaje (Modo compatible):');
-            console.log(` - URL: ${url}`);
-            console.log(` - Recipient: ${cleanNumber}`);
-
-            // Payload exacto como en el curl que sí funciona
-            const payload = { 
-                recipient: cleanNumber,
-                body: body
-            };
-
-            const res = await axios.post(url, payload, { 
-                headers: { 
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                } 
-            });
-
-            console.log('[ExternalService] Respuesta exitosa de la API de WhatsApp:', res.data);
-            return res.data;
-        } catch (error) {
-            console.error('[ExternalService] Error enviando mensaje WhatsApp:');
-            if (error.response) {
-                console.error(' - Status:', error.response.status);
-                // Si la respuesta es HTML (como el error 504), no la imprimimos toda
-                const isHtml = typeof error.response.data === 'string' && error.response.data.includes('<html');
-                console.error(' - Data:', isHtml ? '[Respuesta HTML (ej: Gateway Timeout)]' : JSON.stringify(error.response.data, null, 2));
-            } else {
-                console.error(' - Error Message:', error.message);
-            }
-            return { error: true };
-        }
+  async downloadMedia(output_channel, mediaKey) {
+    try {
+      const res = await axios.get(
+        `${output_channel.api_url}/messages/download/${mediaKey}`,
+        {
+          headers: { Authorization: `Bearer ${output_channel.api_token}` },
+          responseType: "arraybuffer",
+        },
+      );
+      return Buffer.from(res.data).toString("base64");
+    } catch (error) {
+      console.error(
+        "[ExternalService] Error downloading media:",
+        error.message,
+      );
+      throw error;
     }
-
-    async downloadMedia(mediaKey, token) {
-        try {
-            const res = await axios.get(`${this.whatsappApiBaseUrl}/messages/download/${mediaKey}`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-                responseType: 'arraybuffer'
-            });
-            return Buffer.from(res.data).toString('base64');
-        } catch (error) {
-            console.error('Error downloading media:', error.message);
-            return null;
-        }
-    }
+  }
 }
 
 module.exports = new ExternalService();
