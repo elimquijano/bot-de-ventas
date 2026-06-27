@@ -37,6 +37,7 @@ class OrchestratorService {
           history,
           newMessage,
           taskToExecute.data,
+          phone,
         );
       } else {
         console.warn(
@@ -54,6 +55,8 @@ class OrchestratorService {
         accountConfig,
         history,
         newMessage,
+        {},
+        phone,
       );
     }
 

@@ -1,7 +1,7 @@
 const cohereService = require("../services/cohere.service");
 const externalService = require("../services/external.service");
 
-async function handleResponder(accountConfig, history, message) {
+async function handleResponder(accountConfig, history, message, data, phone) {
   const { role, prompt, context } = accountConfig.agent;
 
   const systemPrompt = `
@@ -37,7 +37,13 @@ async function handleResponder(accountConfig, history, message) {
   }
 }
 
-async function handleConsultarProductos(accountConfig, history, message, data) {
+async function handleConsultarProductos(
+  accountConfig,
+  history,
+  message,
+  data,
+  phone,
+) {
   const { auth, endpoints } = accountConfig.permissions.consultar_productos;
   const { role, prompt, context } = accountConfig.agent;
 
@@ -90,12 +96,17 @@ async function handleConsultarProductos(accountConfig, history, message, data) {
   }
 }
 
-async function handleAgendarPedido(accountConfig, history, message, data) {
+async function handleAgendarPedido(
+  accountConfig,
+  history,
+  message,
+  data,
+  phone,
+) {
   const { auth, endpoints } = accountConfig.permissions.agendar_pedido;
   const { role, prompt, context } = accountConfig.agent;
 
   try {
-    // 1. OBTENER DATOS DEL SISTEMA EN PARALELO
     const [allClients, cashRegisters, products] = await Promise.all([
       externalService.get(endpoints.check_customer, auth),
       externalService.get(endpoints.cash_registers, auth),
@@ -105,30 +116,16 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
       ),
     ]);
 
-    // 2. EXTRAER TELÉFONO DEL CLIENTE (viene del chat, sin prefijo de país)
-    const clientPhone =
-      message.match(/\d+/)?.[0] ||
-      history.find((h) => h.role === "user")?.content?.match(/\d{9}/)?.[0] ||
-      "";
+    // Buscar cliente por teléfono — comparar últimos 9 dígitos
+    const senderShort = phone.replace(/\D/g, "").slice(-9);
+    const matchingClients = allClients.filter(
+      (c) => (c.phone || "").replace(/\D/g, "").slice(-9) === senderShort,
+    );
 
-    // Buscar en el historial el número real del cliente (el que usa para chatear)
-    const phoneFromHistory = history[0]?.phone || "";
-
-    // 3. BUSCAR CLIENTE POR TELÉFONO — puede haber duplicados
-    const matchingClients = allClients.filter((c) => {
-      const clientNum = (c.phone || "").replace(/\D/g, "").slice(-9);
-      const senderNum = (phoneFromHistory || clientPhone)
-        .replace(/\D/g, "")
-        .slice(-9);
-      return clientNum === senderNum;
-    });
-
-    // 4. EXTRAER RIDER DEL CAJERO ABIERTO
     const openCashRegister = cashRegisters[0] || null;
     const riderId = openCashRegister?.opened_by?.id || 2;
     const cashRegisterId = openCashRegister?.id || null;
 
-    // 5. PEDIR AL LLM QUE RECOPILE DATOS Y DECIDA
     const systemPrompt = `
         ROL: ${role}
         CONTEXTO DE LA EMPRESA: ${prompt}
@@ -137,13 +134,13 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
         Estás procesando un pedido de un cliente que escribe por WhatsApp.
 
         REGLAS CRÍTICAS:
-        1. NUNCA pidas el teléfono al cliente. Ya lo tienes del sistema de chat.
-        2. Para la dirección SIEMPRE pide que comparta su ubicación con el botón 📍 de WhatsApp. No aceptes direcciones escritas en texto.
+        1. El teléfono del cliente es ${senderShort}. NUNCA se lo pidas, ya lo tienes.
+        2. Para la dirección SIEMPRE pide que comparta su ubicación con el botón 📍 de WhatsApp. No aceptes direcciones escritas en texto libre.
         3. Si en el historial aparece [UBICACIÓN COMPARTIDA: <dirección> | lat=X, lon=Y], ya tienes la dirección y coordenadas. No la vuelvas a pedir.
         4. Revisa el historial completo — producto y cantidad pueden ya estar definidos. No los vuelvas a pedir si ya los tienes.
         5. Si hay múltiples clientes con el mismo teléfono, pregunta al cliente cuál de los nombres es el suyo.
         6. Cuando tengas TODOS los datos (cliente o nombre nuevo, producto, cantidad, ubicación compartida) → action: "create_order".
-        7. Si falta algún dato → action: "collect_data" pidiendo solo ese dato.
+        7. Si falta algún dato → action: "collect_data" pidiendo solo ese dato específico.
 
         CLIENTES ENCONTRADOS CON ESTE NÚMERO:
         ${
@@ -165,7 +162,11 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
           .map((p) => `- ID:${p.id} | ${p.name} | S/${p.price}`)
           .join("\n")}
 
-        CAJA ABIERTA: ${openCashRegister ? `ID:${cashRegisterId} - ${openCashRegister.opened_by?.full_name}` : "Sin caja abierta"}
+        CAJA ABIERTA: ${
+          openCashRegister
+            ? `ID:${cashRegisterId} - Repartidor: ${openCashRegister.opened_by?.full_name}`
+            : "Sin caja abierta"
+        }
 
         HISTORIAL DE CONVERSACIÓN:
         ${JSON.stringify(history)}
@@ -198,16 +199,11 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
       JSON.stringify(aiResponse),
     );
 
-    // 6. SI EL LLM TIENE TODOS LOS DATOS → CONSTRUIR PAYLOAD Y CREAR PEDIDO
     if (aiResponse.action === "create_order" && aiResponse.collected) {
       const collected = aiResponse.collected;
 
-      // Validar que tenemos lo mínimo antes de llamar a la API
       if (!collected.product_id || !collected.lat || !collected.lon) {
-        console.warn(
-          "[handleAgendarPedido] Faltan datos para crear el pedido:",
-          collected,
-        );
+        console.warn("[handleAgendarPedido] Faltan datos mínimos:", collected);
         return {
           action: "message",
           content:
@@ -219,11 +215,8 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
       const now = new Date();
       const scheduledAt = now.toISOString().slice(0, 16);
 
-      // Payload exacto que espera la API
       const orderPayload = {
-        phone: (matchingClients[0]?.phone || clientPhone || "")
-          .replace(/\D/g, "")
-          .slice(-9),
+        phone: senderShort,
         customer_name:
           collected.client_name || matchingClients[0]?.name || "Cliente",
         address: collected.address,
@@ -271,26 +264,32 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
   }
 }
 
-async function handleDarSeguimiento(accountConfig, history, message, data) {
+async function handleDarSeguimiento(
+  accountConfig,
+  history,
+  message,
+  data,
+  phone,
+) {
   const { auth, endpoints } = accountConfig.permissions.dar_seguimiento;
   const { role, prompt, context } = accountConfig.agent;
 
   try {
-    // Obtener pedidos pendientes del cliente
     const pendingSales = await externalService.get(endpoints.status, auth);
+    const senderShort = phone.replace(/\D/g, "").slice(-9);
 
     const systemPrompt = `
         ROL: ${role}
         CONTEXTO DE LA EMPRESA: ${prompt}
         TONO DE RESPUESTA: ${context}
 
-        El cliente pregunta por el estado de su pedido.
-        PEDIDOS PENDIENTES: ${JSON.stringify(pendingSales)}
+        El cliente con teléfono ${senderShort} pregunta por el estado de su pedido.
+        PEDIDOS PENDIENTES EN EL SISTEMA: ${JSON.stringify(pendingSales)}
         HISTORIAL: ${JSON.stringify(history)}
 
-        Identifica el pedido del cliente y comunica su estado de forma clara y amable.
-        Si hay varios pedidos, muestra el más reciente.
-        Si no hay pedidos pendientes, indícalo.
+        Busca en los pedidos pendientes si hay alguno cuyo teléfono coincida con ${senderShort}.
+        Informa el estado de forma clara y amable.
+        Si no hay pedidos para ese número, indícalo.
 
         Responde ÚNICAMENTE en JSON:
         {
@@ -319,29 +318,36 @@ async function handleDarSeguimiento(accountConfig, history, message, data) {
   }
 }
 
-async function handleCancelarPedido(accountConfig, history, message, data) {
+async function handleCancelarPedido(
+  accountConfig,
+  history,
+  message,
+  data,
+  phone,
+) {
   const { auth, endpoints } = accountConfig.permissions.cancelar_pedido;
   const { role, prompt, context } = accountConfig.agent;
 
   try {
-    // Primero obtener los pedidos pendientes para identificar cuál cancelar
     const pendingSales = await externalService.get(
       accountConfig.permissions.dar_seguimiento.endpoints.status,
       auth,
     );
+    const senderShort = phone.replace(/\D/g, "").slice(-9);
 
     const systemPrompt = `
         ROL: ${role}
         CONTEXTO DE LA EMPRESA: ${prompt}
         TONO DE RESPUESTA: ${context}
 
-        El cliente quiere cancelar un pedido.
-        PEDIDOS PENDIENTES: ${JSON.stringify(pendingSales)}
+        El cliente con teléfono ${senderShort} quiere cancelar un pedido.
+        PEDIDOS PENDIENTES EN EL SISTEMA: ${JSON.stringify(pendingSales)}
         HISTORIAL: ${JSON.stringify(history)}
 
-        Identifica qué pedido cancelar. Si hay solo uno, cancélalo directamente.
-        Si hay varios, pregunta cuál.
-        Si no hay pedidos, indícalo.
+        Busca pedidos cuyo teléfono coincida con ${senderShort}.
+        Si hay solo uno, cancélalo directamente → action: "cancel".
+        Si hay varios, pregunta cuál → action: "ask_which".
+        Si no hay pedidos para ese número → action: "no_orders".
 
         Responde ÚNICAMENTE en JSON:
         {
