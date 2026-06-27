@@ -52,12 +52,19 @@ async function handleConsultarProductos(accountConfig, history, message, data) {
       };
     }
 
+    const { role, prompt, context } = accountConfig.agent;
+
     const systemPrompt = `
-        Eres un asistente de ventas. El usuario pregunta por productos.
-        PRODUCTOS DISPONIBLES: ${availableProducts.map((p) => `${p.name} S/${p.price}`).join(", ")}
-        
-        Responde al usuario mostrándole las opciones disponibles de forma atractiva.
-        
+        ROL: ${role}
+        CONTEXTO DE LA EMPRESA: ${prompt}
+        TONO DE RESPUESTA: ${context}
+
+        PRODUCTOS DISPONIBLES CON STOCK:
+        ${availableProducts.map((p) => `- ID:${p.id} | ${p.name} | S/${p.price} | Stock: ${p.stock}`).join("\n")}
+
+        El usuario pregunta por productos. Muéstrale las opciones disponibles de forma atractiva y clara.
+        Usa el historial de conversación para dar continuidad si ya se habló de algún producto antes.
+
         Responde ÚNICAMENTE en JSON:
         {
             "content": "Tu respuesta con la lista de productos...",
@@ -66,6 +73,7 @@ async function handleConsultarProductos(accountConfig, history, message, data) {
         `;
 
     const aiResponse = await cohereService.chat(systemPrompt, [
+      ...history,
       { role: "user", content: message },
     ]);
 
@@ -85,6 +93,7 @@ async function handleConsultarProductos(accountConfig, history, message, data) {
 
 async function handleAgendarPedido(accountConfig, history, message, data) {
   const { auth, endpoints } = accountConfig.permissions.agendar_pedido;
+  const { role, prompt, context } = accountConfig.agent;
 
   try {
     const [clients, cashRegisters] = await Promise.all([
@@ -93,22 +102,47 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
     ]);
 
     const systemPrompt = `
-        Eres un asistente de ventas procesando un pedido.
-        CLIENTES REGISTRADOS: ${JSON.stringify(clients.map((c) => ({ id: c.id, name: c.name, phone: c.phone })))}
-        CAJAS ABIERTAS: ${JSON.stringify(cashRegisters.map((c) => ({ id: c.id, name: c.name })))}
-        HISTORIAL: ${JSON.stringify(history)}
+        ROL: ${role}
+        CONTEXTO DE LA EMPRESA: ${prompt}
+        TONO DE RESPUESTA: ${context}
 
-        Tu objetivo es recopilar la información necesaria para crear un pedido:
-        - Identificar si el cliente ya está registrado por su número de teléfono.
-        - Si no está registrado, pedir nombre y dirección.
-        - Confirmar los productos y cantidades.
-        - Cuando tengas toda la información, indicar action: "create_order" con los datos listos.
+        Estás procesando un pedido de un cliente que escribe por WhatsApp.
+
+        DATO IMPORTANTE: El número de WhatsApp del cliente es el mismo número con el que está chateando.
+        Búscalo en la lista de clientes por su número. NO le pidas su teléfono, ya lo tienes.
+
+        CLIENTES REGISTRADOS EN EL SISTEMA:
+        ${JSON.stringify(clients.map((c) => ({ id: c.id, name: c.name, phone: c.phone, address: c.address })))}
+
+        CAJAS ABIERTAS:
+        ${JSON.stringify(cashRegisters.map((c) => ({ id: c.id, name: c.name })))}
+
+        HISTORIAL DE CONVERSACIÓN (contiene el producto y cantidad ya elegidos si los hay):
+        ${JSON.stringify(history)}
+
+        INSTRUCCIONES:
+        1. Revisa el historial — puede que el cliente ya eligió producto y cantidad antes de llegar aquí.
+        2. Busca al cliente por su número de WhatsApp en la lista de clientes registrados.
+        3. Si está registrado, usa su dirección guardada y confirma el pedido.
+        4. Si no está registrado, pide solo lo que falta: nombre y dirección.
+        5. Cuando tengas: cliente identificado (o datos nuevos), producto, cantidad y dirección → acción "create_order".
+        6. Si falta algo, pide solo ese dato específico → acción "collect_data".
+        7. Nunca pidas el número de teléfono, ya lo tienes del chat.
+        8. Usa la caja abierta disponible. Si hay varias, usa la primera.
 
         Responde ÚNICAMENTE en JSON:
         {
             "content": "Tu mensaje al usuario...",
             "action": "collect_data" | "create_order",
-            "order_data": { "client_id": null, "client_name": "", "address": "", "products": [], "cash_register_id": null }
+            "order_data": {
+                "client_id": null,
+                "client_name": "",
+                "client_phone": "",
+                "address": "",
+                "products": [{ "id": 0, "name": "", "quantity": 0, "price": 0 }],
+                "cash_register_id": null,
+                "rider_id": 2
+            }
         }
         `;
 
@@ -117,14 +151,21 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
       { role: "user", content: message },
     ]);
 
+    console.log(
+      "[handleAgendarPedido] Respuesta IA:",
+      JSON.stringify(aiResponse),
+    );
+
     if (aiResponse.action === "create_order" && aiResponse.order_data) {
-      const order = await externalService.post(endpoints.create, auth, {
-        ...aiResponse.order_data,
-        rider_id: aiResponse.order_data.rider_id || 2,
-      });
+      console.log("[handleAgendarPedido] Creando pedido en el sistema...");
+      const order = await externalService.post(
+        endpoints.create,
+        auth,
+        aiResponse.order_data,
+      );
       return {
         action: "message",
-        content: `¡Pedido registrado con éxito! Tu número de pedido es #${order.id || "N/A"}. Te avisaremos cuando salga a entrega.`,
+        content: `¡Pedido registrado con éxito! Tu número de pedido es #${order.id || order.data?.id || "N/A"}. Te avisaremos cuando salga a entrega. 🚀`,
         data: order,
       };
     }
@@ -135,13 +176,14 @@ async function handleAgendarPedido(accountConfig, history, message, data) {
     return {
       action: "message",
       content:
-        "¡Excelente! Para agendar tu pedido necesito tu dirección exacta y el producto que deseas. ¿Me los podrías confirmar?",
+        "Tuve un problema al procesar tu pedido. ¿Podrías intentarlo de nuevo?",
     };
   }
 }
 
 async function handleDarSeguimiento(accountConfig, history, message, data) {
   const { auth, endpoints } = accountConfig.permissions.dar_seguimiento;
+  const { role, prompt, context } = accountConfig.agent;
 
   try {
     const saleId = data?.sale_id;
@@ -150,7 +192,7 @@ async function handleDarSeguimiento(accountConfig, history, message, data) {
       return {
         action: "message",
         content:
-          "Entiendo que quieres saber el estado de tu pedido. ¿Me podrías dar tu número de pedido o DNI?",
+          "Entiendo que quieres saber el estado de tu pedido. ¿Me podrías dar tu número de pedido?",
       };
     }
 
@@ -158,10 +200,12 @@ async function handleDarSeguimiento(accountConfig, history, message, data) {
     const status = await externalService.get(url, auth);
 
     const systemPrompt = `
-        Eres un asistente de ventas informando el estado de un pedido.
-        ESTADO DEL PEDIDO: ${JSON.stringify(status)}
+        ROL: ${role}
+        CONTEXTO DE LA EMPRESA: ${prompt}
+        TONO DE RESPUESTA: ${context}
 
-        Informa al usuario de forma clara y amable el estado de su pedido.
+        Informa al usuario el estado de su pedido de forma clara y amable.
+        ESTADO DEL PEDIDO: ${JSON.stringify(status)}
 
         Responde ÚNICAMENTE en JSON:
         {
