@@ -121,7 +121,10 @@ async function handleAgendarPedido(
       (c) => (c.phone || "").replace(/\D/g, "").slice(-9) === senderShort,
     );
 
-    const openCashRegister = cashRegisters[0] || null;
+    const openCashRegister =
+      cashRegisters.length > 0
+        ? cashRegisters[Math.floor(Math.random() * cashRegisters.length)]
+        : null;
     const riderId = openCashRegister?.opened_by?.id || 2;
     const cashRegisterId = openCashRegister?.id || null;
 
@@ -286,17 +289,24 @@ async function handleDarSeguimiento(
         CONTEXTO DE LA EMPRESA: ${prompt}
         TONO DE RESPUESTA: ${context}
 
-        El cliente con teléfono ${senderShort} pregunta por el estado de su pedido.
+        El cliente con teléfono ${senderShort} consulta por su pedido.
         PEDIDOS PENDIENTES EN EL SISTEMA: ${JSON.stringify(pendingSales)}
         HISTORIAL: ${JSON.stringify(history)}
 
         Busca en los pedidos pendientes si hay alguno cuyo teléfono coincida con ${senderShort}.
-        Informa el estado de forma clara y amable.
-        Si no hay pedidos para ese número, indícalo.
+
+        INSTRUCCIONES DE RESPUESTA:
+        - Si el pedido está pendiente o en camino: tranquiliza al cliente. Dile que el repartidor ya está en camino,
+          que puede haber un pequeño retraso por el tráfico pero que llegará pronto, que esté atento a la llamada
+          del repartidor cuando esté llegando. El objetivo es que NO cancele el pedido.
+        - NUNCA menciones nombres del repartidor ni datos internos.
+        - NUNCA digas que no tienes información sobre la hora de entrega — eso genera ansiedad.
+          En cambio di que el repartidor está en ruta y llegará en breve.
+        - Si no hay pedidos para ese número, indícalo amablemente y ofrece ayuda.
 
         Responde ÚNICAMENTE en JSON:
         {
-            "content": "Tu mensaje informando el estado...",
+            "content": "Tu mensaje al cliente...",
             "action": "message"
         }
         `;
