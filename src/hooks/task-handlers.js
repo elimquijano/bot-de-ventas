@@ -64,8 +64,8 @@ async function handleConsultarProductos(
         CONTEXTO DE LA EMPRESA: ${prompt}
         TONO DE RESPUESTA: ${context}
 
-        PRODUCTOS DISPONIBLES CON STOCK:
-        ${availableProducts.map((p) => `- ID:${p.id} | ${p.name} | S/${p.price} | Stock: ${p.stock}`).join("\n")}
+        PRODUCTOS DISPONIBLES:
+        ${availableProducts.map((p) => `- ID:${p.id} | ${p.name} | S/${p.price}`).join("\n")}
 
         El usuario pregunta por productos. Muéstrale las opciones disponibles de forma atractiva y clara.
         Usa el historial de conversación para dar continuidad si ya se habló de algún producto antes.
@@ -150,10 +150,10 @@ async function handleAgendarPedido(
         ${JSON.stringify(history)}
 
         FLUJO DE RECOPILACIÓN — sigue este orden estricto, pregunta DE A UN DATO POR MENSAJE:
-        1. Producto → si no está en el historial, preguntar cuál quiere.
+        1. Producto → si no está confirmado en el historial, muestra la lista de PRODUCTOS DISPONIBLES y pregunta cuál quiere. NUNCA inventes productos ni menciones stock.
         2. Cantidad → si no está en el historial, preguntar cuántos.
         3. Ubicación → si no hay [UBICACIÓN COMPARTIDA: ...] en el historial, pedir que use el botón 📍 de WhatsApp. NUNCA aceptes dirección escrita en texto.
-        4. Confirmación → resumir el pedido y pedir confirmación.
+        4. Confirmación → resumir el pedido (producto, cantidad, precio total, dirección) y pedir confirmación.
         5. Cuando el cliente confirme y tengas producto + cantidad + ubicación compartida → action: "create_order".
 
         REGLAS:
