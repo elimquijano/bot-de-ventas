@@ -14,12 +14,23 @@ class FlowService {
 
       if (this.shouldIgnore(input)) {
         console.log(
-          `[FlowService] Mensaje ignorado. evento=${input.eventType}, fromMe=${input.fromMe}, isGroup=${input.isGroup}, isStatus=${input.isStatus}, hasMessage=${input.hasMessage}`,
+          `[FlowService] Mensaje ignorado. evento=${input.eventType}, fromMe=${input.fromMe}, isGroup=${input.isGroup}, isStatus=${input.isStatus}, hasMessage=${input.hasMessage}, type=${input.type}`,
         );
         return { success: true, ignored: true };
       }
 
-      const { phone, recipient, type, text, location } = input;
+      const { phone, recipient, type, text, location, fromMe } = input;
+
+      // Mensajes salientes (tú tomas el control): guardar en historial pero no responder
+      if (fromMe) {
+        if (text) {
+          await storageService.saveMessage(phone, "assistant", text);
+          console.log(
+            `[FlowService] Mensaje saliente guardado en historial de ${phone}`,
+          );
+        }
+        return { success: true, fromMe: true };
+      }
 
       const history = await storageService.getChatHistory(phone);
 
@@ -42,7 +53,11 @@ class FlowService {
 
       console.log(`[FlowService] Nuevo mensaje de ${phone}: "${userContent}"`);
 
-      const analysis = await checkIntention(history, userContent);
+      const analysis = await checkIntention(
+        history,
+        userContent,
+        accountConfig.agent,
+      );
       console.log(
         `[FlowService] Análisis de intención: ${analysis.intention} (${analysis.reason})`,
       );
@@ -96,10 +111,10 @@ class FlowService {
 
   shouldIgnore(input) {
     if (input.eventType !== "message.received") return true;
-    if (input.fromMe === true) return true;
     if (input.isStatus) return true;
     if (input.isGroup) return true;
     if (!input.hasMessage) return true;
+    if (input.type === "protocol") return true;
     if (input.type === "text" && !input.text?.trim()) return true;
     return false;
   }
@@ -128,10 +143,27 @@ class FlowService {
     const senderNumber = body.senderNumber || senderJid.split("@")[0] || "";
     const phone = senderNumber.replace(/\D/g, "");
     const fromMe = body.fromMe === true;
-    const isGroup =
-      senderJid.includes("@g.us") || (body.from || "").includes("@g.us");
+    const fromField = body.from || "";
+    const isGroup = senderJid.includes("@g.us") || fromField.includes("@g.us");
     const isStatus =
-      senderJid.includes("@status") || (body.from || "").includes("@status");
+      senderJid.includes("@status") ||
+      fromField.includes("@status") ||
+      fromField === "status@broadcast";
+
+    // Tipos de mensajes de protocolo que deben ignorarse
+    const protocolTypes = [
+      "protocolMessage",
+      "reactionMessage",
+      "pollUpdateMessage",
+      "ephemeralMessage",
+      "senderKeyDistributionMessage",
+    ];
+    const isProtocol = protocolTypes.some((t) => !!msg[t]);
+
+    if (isProtocol) {
+      return this._emptyInput(eventType, phone, fromMe, "protocol");
+    }
+
     const locationMsg = msg.locationMessage || null;
 
     const text = locationMsg
@@ -225,7 +257,6 @@ class FlowService {
     const isLocation = !!msg.location;
     const isGroup =
       msg.chat?.type === "group" || msg.chat?.type === "supergroup";
-
     const text = isLocation ? "" : msg.text || msg.caption || "";
 
     const location = isLocation
@@ -249,15 +280,15 @@ class FlowService {
     };
   }
 
-  _emptyInput(eventType) {
+  _emptyInput(eventType, phone = "", fromMe = false, type = "text") {
     return {
       eventType,
-      type: "text",
+      type,
       text: "",
       location: null,
       recipient: "",
-      phone: "",
-      fromMe: false,
+      phone,
+      fromMe,
       isStatus: false,
       isGroup: false,
       hasMessage: false,

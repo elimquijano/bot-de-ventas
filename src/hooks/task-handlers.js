@@ -126,35 +126,16 @@ async function handleAgendarPedido(
     const cashRegisterId = openCashRegister?.id || null;
 
     const systemPrompt = `
-        ROL: ${role}
-        CONTEXTO DE LA EMPRESA: ${prompt}
-        TONO DE RESPUESTA: ${context}
+        Eres un asistente de ventas procesando un pedido por WhatsApp. Sé amable y directo.
 
-        Estás procesando un pedido de un cliente que escribe por WhatsApp.
-
-        REGLAS CRÍTICAS:
-        1. El teléfono del cliente es ${senderShort}. NUNCA se lo pidas, ya lo tienes.
-        2. Para la dirección SIEMPRE pide que comparta su ubicación con el botón 📍 de WhatsApp. No aceptes direcciones escritas en texto libre.
-        3. Si en el historial aparece [UBICACIÓN COMPARTIDA: <dirección> | lat=X, lon=Y], ya tienes la dirección y coordenadas. No la vuelvas a pedir.
-        4. Revisa el historial completo — producto y cantidad pueden ya estar definidos. No los vuelvas a pedir si ya los tienes.
-        5. Si hay múltiples clientes con el mismo teléfono, pregunta al cliente cuál de los nombres es el suyo.
-        6. Cuando tengas TODOS los datos (cliente o nombre nuevo, producto, cantidad, ubicación compartida) → action: "create_order".
-        7. Si falta algún dato → action: "collect_data" pidiendo solo ese dato específico.
-        8. En "collected.client_name": usa el nombre del cliente registrado si lo encontraste, o el nombre que mencionó en el chat. Si no hay ninguno, deja vacío.
-        9. NUNCA menciones nombres de repartidores, IDs internos, nombres de cajas ni datos del sistema en tus mensajes al cliente.
-
-        CLIENTES ENCONTRADOS CON ESTE NÚMERO:
-        ${
-          matchingClients.length > 0
-            ? JSON.stringify(
-                matchingClients.map((c) => ({
-                  id: c.id,
-                  name: c.name,
-                  phone: c.phone,
-                  address: c.address,
-                })),
-              )
-            : "[] (cliente nuevo, no registrado)"
+        DATOS YA CONOCIDOS (no volver a pedir):
+        - Teléfono del cliente: ${senderShort}
+        - Cliente registrado: ${
+          matchingClients.length === 1
+            ? `Sí → nombre: "${matchingClients[0].name}"`
+            : matchingClients.length > 1
+              ? `Hay ${matchingClients.length} clientes con este número, preguntar cuál es`
+              : "No registrado"
         }
 
         PRODUCTOS DISPONIBLES:
@@ -163,14 +144,28 @@ async function handleAgendarPedido(
           .map((p) => `- ID:${p.id} | ${p.name} | S/${p.price}`)
           .join("\n")}
 
-        CAJA ABIERTA: ${openCashRegister ? `ID:${cashRegisterId}` : "Sin caja abierta"}
+        CAJA ABIERTA: ${openCashRegister ? "Sí" : "No hay caja abierta"}
 
         HISTORIAL DE CONVERSACIÓN:
         ${JSON.stringify(history)}
 
+        FLUJO DE RECOPILACIÓN — sigue este orden estricto, pregunta DE A UN DATO POR MENSAJE:
+        1. Producto → si no está en el historial, preguntar cuál quiere.
+        2. Cantidad → si no está en el historial, preguntar cuántos.
+        3. Ubicación → si no hay [UBICACIÓN COMPARTIDA: ...] en el historial, pedir que use el botón 📍 de WhatsApp. NUNCA aceptes dirección escrita en texto.
+        4. Confirmación → resumir el pedido y pedir confirmación.
+        5. Cuando el cliente confirme y tengas producto + cantidad + ubicación compartida → action: "create_order".
+
+        REGLAS:
+        - Un solo dato por mensaje. No preguntes producto Y cantidad Y ubicación en el mismo mensaje.
+        - NUNCA ofrezcas descuentos. Los precios son fijos. Si el cliente pide rebaja, responde amablemente que el precio es fijo.
+        - NUNCA menciones nombres de repartidores, IDs, cajas ni datos internos del sistema.
+        - Si hay [UBICACIÓN COMPARTIDA: <dirección> | lat=X, lon=Y] en el historial, ya tienes la dirección. No la pidas de nuevo.
+        - "collected.client_name": usa el nombre del cliente registrado si existe, si no deja vacío (el sistema lo completará).
+
         Responde ÚNICAMENTE en JSON:
         {
-            "content": "Tu mensaje al usuario (sin datos internos del sistema)...",
+            "content": "Tu mensaje al usuario...",
             "action": "collect_data" | "create_order" | "ask_client_selection",
             "collected": {
                 "client_id": null,
@@ -246,10 +241,14 @@ async function handleAgendarPedido(
         auth,
         orderPayload,
       );
+      const orderId = order.id || order.data?.id || "N/A";
+
+      // Usar el content del LLM y solo agregar el número de pedido real al final
+      const successContent = `${aiResponse.content}\n\nTu número de pedido es *#${orderId}*. 🚚`;
 
       return {
         action: "message",
-        content: aiResponse.content,
+        content: successContent,
         data: order,
       };
     }
