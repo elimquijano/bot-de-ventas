@@ -162,9 +162,10 @@ async function handleAgendarPedido(
         REGLAS:
         - Un solo dato por mensaje. No preguntes producto Y cantidad Y ubicación en el mismo mensaje.
         - NUNCA ofrezcas descuentos. Los precios son fijos. Si el cliente pide rebaja, responde amablemente que el precio es fijo.
-        - NUNCA menciones nombres de repartidores, IDs, cajas ni datos internos del sistema.
+        - NUNCA menciones IDs, números internos, nombres de repartidores, cajas ni ningún dato interno del sistema en tus mensajes al cliente.
         - Si hay [UBICACIÓN COMPARTIDA: <dirección> | lat=X, lon=Y] en el historial, ya tienes la dirección. No la pidas de nuevo.
-        - "collected.client_name": usa el nombre del cliente registrado si existe, si no deja vacío (el sistema lo completará).
+        - Si el cliente menciona "vuelto", "cambio", "billete de X soles": confirma que se lo comunicarás al repartidor y guarda eso en "delivery_notes". No lo trates como descuento.
+        - "collected.client_name": usa el nombre del cliente registrado si existe, si no deja vacío.
 
         Responde ÚNICAMENTE en JSON:
         {
@@ -179,7 +180,8 @@ async function handleAgendarPedido(
                 "unit_price": 0,
                 "address": "",
                 "lat": null,
-                "lon": null
+                "lon": null,
+                "delivery_notes": ""
             }
         }
         `;
@@ -230,7 +232,7 @@ async function handleAgendarPedido(
         discount: 0,
         rider_id: riderId,
         notes: "",
-        delivery_notes: "",
+        delivery_notes: collected.delivery_notes || "",
         scheduled_at: scheduledAt,
       };
 
